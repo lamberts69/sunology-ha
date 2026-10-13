@@ -170,4 +170,21 @@ class SunologyCloud:
 
     async def get_overview(self) -> dict:
         """POST /api/overview — aggregated panel, grid, battery and hub data."""
-        return await self._request("POST", "/api/overview")
+        return await self._request("POST", "/api/overview", json={})
+
+    async def get_client(self) -> dict:
+        """GET /api/client — return the full user/client object.
+
+        Used by StoreyMaster.async_set_pilot_mode() to grab the current state
+        before replaying it with an updated cloudScheduleParameter.
+        """
+        return await self._request("GET", "/api/client")
+
+
+    async def set_client(self, user_obj: dict) -> dict:
+        """PUT /api/client — replace the full user/client object.
+
+        Partial bodies are rejected by the server (same full-object pattern
+        as patch_storey). Caller must pass every field returned by get_client().
+        """
+        return await self._request("PUT", "/api/client", json=user_obj)    

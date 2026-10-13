@@ -56,5 +56,33 @@ class FlowWorkingModes(StrEnum):
 # NEW: known STOREY working modes (incomplete — capture MANUEL/SUNCAST/EXPERT
 # values via the mobile app to extend this enum)
 class StoreyWorkingMode(StrEnum):
-    """Working mode of a STOREY battery (set via cloud API)."""
     HUB_REMOTE = "HUB_REMOTE"
+    CLOUD_SCHEDULE = "CLOUD_SCHEDULE"
+
+
+class StoreyPilotMode(StrEnum):
+    """User-facing battery pilot mode (as shown in the Sunology app)."""
+    MANUEL = "MANUEL"
+    SUNCAST = "SUNCAST"
+    EXPERT = "EXPERT"
+
+
+# Mapping pilot mode → (cloudScheduleParameter on /api/client, workingMode on STOREY)
+PILOT_MODE_TO_CLOUD_PARAM: dict[str, str | None] = {
+    StoreyPilotMode.MANUEL: "MANUAL",
+    StoreyPilotMode.SUNCAST: "SUNCAST",
+    StoreyPilotMode.EXPERT: None,
+}
+
+PILOT_MODE_TO_WORKING_MODE: dict[str, str] = {
+    StoreyPilotMode.MANUEL: StoreyWorkingMode.CLOUD_SCHEDULE,
+    StoreyPilotMode.SUNCAST: StoreyWorkingMode.CLOUD_SCHEDULE,
+    StoreyPilotMode.EXPERT: StoreyWorkingMode.HUB_REMOTE,
+}
+
+# Reverse mapping to derive the pilot mode from a cloudScheduleParameter value
+CLOUD_PARAM_TO_PILOT_MODE: dict[str | None, str] = {
+    "MANUAL": StoreyPilotMode.MANUEL,
+    "SUNCAST": StoreyPilotMode.SUNCAST,
+    None: StoreyPilotMode.EXPERT,
+}

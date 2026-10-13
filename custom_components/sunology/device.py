@@ -306,6 +306,7 @@ class StoreyMaster(SunologyAbstractDevice, BatteryPackInterface, BatteryEventInt
         self._inhibition_timeout_ms: int | None = raw_storey.get("inhibitionTimeout")
         self._working_mode: str | None = raw_storey.get("workingMode")
         self._cloud_uuid: str | None = None  # populated by SunologyContext at setup
+        self._pilot_mode: str | None = None  # populated by the SelectEntity on first read
 
     @property
     def suggested_area(self) -> str:
@@ -422,6 +423,52 @@ class StoreyMaster(SunologyAbstractDevice, BatteryPackInterface, BatteryEventInt
             inhibition_timeout=value,
         )
 
+    # ===== Pilot mode (cloudScheduleParameter + workingMode together) =====
+
+    @property
+    def pilot_mode(self) -> str | None:
+        """Current pilot mode (MANUEL / SUNCAST / EXPERT), None if unknown yet."""
+        return self._pilot_mode
+
+    @pilot_mode.setter
+    def pilot_mode(self, value: str | None) -> None:
+        self._pilot_mode = value
+
+    async def async_set_pilot_mode(self, cloud, mode: str) -> None:
+        """Set the battery pilot mode via the 2-request cloud sequence.
+
+        1. GET /api/client  → full user object
+        2. PUT /api/client with cloudScheduleParameter updated from `mode`
+        3. PATCH /api/storage-battery with the matching workingMode
+           (also clears any active pause via the sentinel inhibitionTimeout)
+        """
+        from .const import PILOT_MODE_TO_CLOUD_PARAM, PILOT_MODE_TO_WORKING_MODE
+
+        if mode not in PILOT_MODE_TO_CLOUD_PARAM:
+            raise ValueError(f"Unknown pilot mode: {mode}")
+        if self._cloud_uuid is None:
+            raise RuntimeError(
+                f"No cloud UUID known for STOREY {self.device_id} — "
+                "is cloud configured and reachable?"
+            )
+
+        # 1 + 2 — update the user/client object
+        client = await cloud.get_client()
+        client["cloudScheduleParameter"] = PILOT_MODE_TO_CLOUD_PARAM[mode]
+        await cloud.set_client(client)
+
+        # 3 — update the STOREY workingMode (and clear any active pause)
+        await cloud.patch_storey(
+            self._cloud_uuid,
+            min_soc=self._min_soc or 15,
+            working_mode=PILOT_MODE_TO_WORKING_MODE[mode],
+            inhibition_timeout=None,
+        )
+
+        # Optimistic local update
+        self._pilot_mode = mode
+        self._working_mode = PILOT_MODE_TO_WORKING_MODE[mode]
+        
     def update_product(self, raw_event):
         """Refresh local state from a productInfo event."""
         super().update_product(raw_event)

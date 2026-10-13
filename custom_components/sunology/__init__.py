@@ -101,11 +101,16 @@ async def async_setup_entry(hass, entry: SunologyConfigEntry):
     # We add device to the context
     await context.init_context(hass)
 
-    if cloud is not None:
-        overview_coordinator = SunologyOverviewCoordinator(hass, cloud)
-        await overview_coordinator.async_refresh()
-        context.overview_coordinator = overview_coordinator
-        _LOGGER.info("Cloud overview coordinator started (data=%s)", overview_coordinator.data is not None)
+    # Cloud overview coordinator temporarily disabled —
+    # POST /api/overview returns HTTP 500 with the current empty body.
+    # Needs MITM re-capture to determine the required body shape
+    # (likely a stationIds / siteId field). Re-enable once known.
+    #
+    # if cloud is not None:
+    #     overview_coordinator = SunologyOverviewCoordinator(hass, cloud)
+    #     await overview_coordinator.async_refresh()
+    #     context.overview_coordinator = overview_coordinator
+    #     _LOGGER.info("Cloud overview coordinator started (data=%s)", overview_coordinator.data is not None)
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True

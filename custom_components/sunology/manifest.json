@@ -1,15 +1,15 @@
 {
     "domain": "sunology",
-    "name": "Sunology",
-    "codeowners": ["@sunology-tech"],
+    "name": "Sunology (community fork)",
+    "codeowners": ["@sunology-tech", "@lamberts69"],
     "config_flow": true,
     "dependencies": ["zeroconf"],
-    "documentation": "https://github.com/sunology-tech/sunology-ha",
+    "documentation": "https://github.com/lamberts69/sunology-ha",
     "integration_type": "hub",
     "iot_class": "local_push",
-    "issue_tracker": "https://github.com/sunology-tech/sunology-ha/issues",
+    "issue_tracker": "https://github.com/lamberts69/sunology-ha/issues",
     "loggers": ["sunology"],
-    "requirements": ["websockets>=14.1", "asyncio>=3.4.3"],
-    "version": "1.3.3",
+    "requirements": ["websockets>=14.1"],
+    "version": "1.4.0",
     "zeroconf": ["_solarhome._tcp.local."]
 }

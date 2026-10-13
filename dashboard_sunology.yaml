@@ -1,0 +1,163 @@
+# ============================================================
+# Sunology Dashboard — Home Assistant Lovelace (built-in cards)
+# ============================================================
+#
+# HOW TO USE
+# ----------
+# 1. Go to Settings > Dashboards > Add dashboard (or open an existing one)
+# 2. Enter the raw YAML editor (⋮ > Edit dashboard > Raw config editor)
+# 3. Paste the content of this file and click SAVE
+#
+# CUSTOMISE BEFORE PASTING
+# -------------------------
+# • BATTERY_SERIAL  Replace with your battery serial (e.g. 10003B3BD08C)
+# • HUB_SERIAL      Replace with your hub serial      (e.g. 80B54E626EE4)
+# • Panel entities  Run the template below in Developer Tools > Template to
+#                   discover your panel entity IDs:
+#
+#   {{ states | selectattr('entity_id','search','sunology_panel') | map(attribute='entity_id') | list }}
+#
+# OPTIONAL MUSHROOM CARDS (HACS)
+# --------------------------------
+# Where noted in comments, mushroom-entity-card / mushroom-chips-card can be
+# substituted for a richer look.  Install via HACS > Frontend > Mushroom.
+# ============================================================
+
+title: Sunology
+views:
+  - title: Énergie solaire
+    path: sunology
+    icon: mdi:solar-power
+
+    cards:
+
+      # ── TOTAL PRODUCTION ────────────────────────────────────────────────
+      - type: entity
+        entity: sensor.sunology_production_total
+        name: Production totale
+        icon: mdi:solar-power
+        # Mushroom alternative:
+        # type: custom:mushroom-entity-card
+        # entity: sensor.sunology_production_total
+        # primary_info: state
+        # secondary_info: name
+
+      # ── POWER FLOW OVERVIEW (glance — no native flow card) ───────────────
+      # For a graphical flow card, install custom:power-flow-card-plus (HACS)
+      - type: glance
+        title: Flux d'énergie instantané
+        show_state: true
+        show_name: true
+        columns: 3
+        entities:
+          - entity: sensor.sunology_production_total
+            name: Production
+            icon: mdi:solar-power
+          - entity: sensor.sunology_grid_sold
+            name: Revendu réseau
+            icon: mdi:transmission-tower-export
+          - entity: sensor.sunology_grid_purchased
+            name: Acheté réseau
+            icon: mdi:transmission-tower-import
+          # Replace BATTERY_SERIAL:
+          - entity: sensor.sunology_battery_BATTERY_SERIAL_power
+            name: Batterie (W)
+            icon: mdi:battery-charging
+          - entity: sensor.sunology_battery_BATTERY_SERIAL_soc
+            name: Batterie SOC
+            icon: mdi:battery
+          - entity: sensor.sunology_battery_BATTERY_SERIAL_state
+            name: État batterie
+            icon: mdi:battery-sync
+
+      # ── SELF-CONSUMPTION GAUGE ──────────────────────────────────────────
+      - type: gauge
+        entity: sensor.sunology_self_consumption_ratio
+        name: Taux d'autoconsommation
+        min: 0
+        max: 100
+        needle: true
+        severity:
+          red: 0
+          yellow: 40
+          green: 70
+        # Mushroom alternative:
+        # type: custom:mushroom-chips-card
+        # chips:
+        #   - type: entity
+        #     entity: sensor.sunology_self_consumption_ratio
+
+      # ── BATTERY SOC GAUGE ───────────────────────────────────────────────
+      # Replace BATTERY_SERIAL with the actual serial (e.g. 10003B3BD08C → 10003b3bd08c)
+      - type: gauge
+        entity: sensor.sunology_battery_BATTERY_SERIAL_soc
+        name: Charge de la batterie
+        min: 0
+        max: 100
+        needle: true
+        severity:
+          red: 0
+          yellow: 20
+          green: 50
+
+      # ── BATTERY DETAIL CARD ─────────────────────────────────────────────
+      - type: entities
+        title: Batterie (détails)
+        entities:
+          - entity: sensor.sunology_battery_BATTERY_SERIAL_state
+            name: État
+          - entity: sensor.sunology_battery_BATTERY_SERIAL_power
+            name: Puissance (W)
+          - entity: sensor.sunology_battery_BATTERY_SERIAL_stored_energy
+            name: Énergie stockée (kWh)
+          - entity: sensor.sunology_battery_BATTERY_SERIAL_capacity
+            name: Capacité nominale (Wh)
+          - entity: sensor.sunology_battery_BATTERY_SERIAL_working_mode
+            name: Mode de fonctionnement
+
+      # ── GRID DETAIL CARD ────────────────────────────────────────────────
+      - type: entities
+        title: Réseau électrique
+        entities:
+          - entity: sensor.sunology_grid_purchased
+            name: Puissance achetée (W)
+          - entity: sensor.sunology_grid_sold
+            name: Puissance revendue (W)
+          - entity: sensor.sunology_self_consumption_ratio
+            name: Autoconsommation (%)
+
+      # ── PER-PANEL PRODUCTION ────────────────────────────────────────────
+      # Entity IDs follow the pattern:
+      #   sensor.sunology_panel_<surname_slug>_production
+      # where surname_slug = surname.lower(), spaces → underscore
+      # Example: "Sunology 4" → sensor.sunology_panel_sunology_4_production
+      #
+      # Uncomment and adapt the lines below for your panels:
+      - type: entities
+        title: Panneaux solaires
+        entities:
+          # - entity: sensor.sunology_panel_sunology_1_production
+          #   name: "Sunology 1 — production (W)"
+          # - entity: sensor.sunology_panel_sunology_1_state
+          #   name: "Sunology 1 — état"
+          # - entity: sensor.sunology_panel_sunology_2_production
+          #   name: "Sunology 2 — production (W)"
+          # - entity: sensor.sunology_panel_sunology_2_state
+          #   name: "Sunology 2 — état"
+          # - entity: sensor.sunology_panel_sunology_3_production
+          #   name: "Sunology 3 — production (W)"
+          # - entity: sensor.sunology_panel_sunology_4_production
+          #   name: "Sunology 4 — production (W)"
+          - entity: sensor.sunology_production_total
+            name: "Total production"
+
+      # ── HUB STATUS ──────────────────────────────────────────────────────
+      # Replace HUB_SERIAL with your hub serial number (e.g. 80B54E626EE4 → 80b54e626ee4)
+      - type: entities
+        title: Hub STREAM Connect
+        entities:
+          - entity: binary_sensor.sunology_hub_HUB_SERIAL_connected
+            name: Hub connecté
+            # Mushroom alternative:
+            # type: custom:mushroom-entity-card
+            # entity: binary_sensor.sunology_hub_HUB_SERIAL_connected

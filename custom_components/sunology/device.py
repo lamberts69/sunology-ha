@@ -293,7 +293,7 @@ class StoreyMaster(SunologyAbstractDevice, BatteryPackInterface, BatteryEventInt
     """Home Assistant representation of a Sunology device PLAY."""
 
     def __init__(self, raw_storey):
-        """Initialize PLAYMax device."""
+        """Initialize STOREY master device."""
         super().__init__(raw_storey)
 
         BatteryPackInterface.__init__(self, raw_storey)
@@ -301,6 +301,11 @@ class StoreyMaster(SunologyAbstractDevice, BatteryPackInterface, BatteryEventInt
         self._unique_id: str = f"{raw_storey['id']}"
         self._status = None
         self._acVoltage = None
+        # NEW: config state (read from productInfo, written via cloud)
+        self._min_soc: int | None = raw_storey.get("minSoc")
+        self._inhibition_timeout_ms: int | None = raw_storey.get("inhibitionTimeout")
+        self._working_mode: str | None = raw_storey.get("workingMode")
+        self._cloud_uuid: str | None = None  # populated by SunologyContext at setup
 
     @property
     def suggested_area(self) -> str:
@@ -341,6 +346,91 @@ class StoreyMaster(SunologyAbstractDevice, BatteryPackInterface, BatteryEventInt
     def status(self, status):
         """Set the status value"""
         self._status = status
+
+    # ===== NEW: cloud-backed config (minSoc, inhibitionTimeout, workingMode) =====
+
+    @property
+    def cloud_uuid(self) -> str | None:
+        """Cloud UUID for this STOREY (set by SunologyContext at setup)."""
+        return self._cloud_uuid
+
+    @cloud_uuid.setter
+    def cloud_uuid(self, value: str | None) -> None:
+        self._cloud_uuid = value
+
+    @property
+    def min_soc(self) -> int | None:
+        """Battery reserve percentage (5-70), read from local WebSocket productInfo."""
+        return self._min_soc
+
+    @property
+    def inhibition_timeout_ms(self) -> int | None:
+        """Pause-until timestamp in epoch ms (None or past = no pause)."""
+        return self._inhibition_timeout_ms
+
+    @property
+    def working_mode(self) -> str | None:
+        """Current working mode (e.g. HUB_REMOTE)."""
+        return self._working_mode
+
+    def update_min_soc(self, value: int) -> None:
+        """Optimistically update local minSoc state after a successful cloud write."""
+        self._min_soc = value
+
+    async def async_set_min_soc(self, cloud, value: int) -> None:
+        """Set the battery reserve via the cloud API.
+
+        The new value will be reflected locally on the next productInfo event
+        from the gateway (typically within 5-30 s).
+        """
+        from datetime import datetime, timezone
+
+        if self._cloud_uuid is None:
+            raise RuntimeError(
+                f"No cloud UUID known for STOREY {self.device_id} — "
+                "is cloud configured and reachable?"
+            )
+
+        # Convert local epoch-ms inhibition timeout to datetime for the cloud payload
+        inhibition_dt = None
+        if self._inhibition_timeout_ms:
+            inhibition_dt = datetime.fromtimestamp(
+                self._inhibition_timeout_ms / 1000, tz=timezone.utc
+            )
+
+        await cloud.patch_storey(
+            self._cloud_uuid,
+            min_soc=value,
+            working_mode=self._working_mode or "HUB_REMOTE",
+            inhibition_timeout=inhibition_dt,
+        )
+
+    def update_inhibition_timeout(self, value_ms) -> None:
+        """Optimistically update the local inhibitionTimeout (epoch ms)."""
+        self._inhibition_timeout_ms = value_ms
+
+    async def async_set_inhibition_timeout(self, cloud, value) -> None:
+        """Set the pause-until datetime via the cloud API."""
+        if self._cloud_uuid is None:
+            raise RuntimeError(
+                f"No cloud UUID known for STOREY {self.device_id}"
+            )
+        await cloud.patch_storey(
+            self._cloud_uuid,
+            min_soc=self._min_soc or 10,
+            working_mode=self._working_mode or "HUB_REMOTE",
+            inhibition_timeout=value,
+        )
+
+    def update_product(self, raw_event):
+        """Refresh local state from a productInfo event."""
+        super().update_product(raw_event)
+        if "minSoc" in raw_event:
+            self._min_soc = raw_event["minSoc"]
+        if "inhibitionTimeout" in raw_event:
+            self._inhibition_timeout_ms = raw_event["inhibitionTimeout"]
+        if "workingMode" in raw_event:
+            self._working_mode = raw_event["workingMode"]
 
 class StoreyPack(SunologyAbstractDevice, BatteryPackInterface, BatteryEventInterface):
     """Home Assistant representation of a Sunology device PLAY."""

@@ -4,4 +4,4 @@ bin/
 include/
 lib/
 **/__pycache__/
-env/
+env/*.code-workspace

@@ -1,6 +1,7 @@
 """ sensor for Sunology objects """
 
 import logging
+import re
 from typing import Any, Mapping
 
 from homeassistant.core import callback
@@ -13,7 +14,8 @@ from homeassistant.helpers.update_coordinator import (
     DataUpdateCoordinator,
 )
 
-from .const import SmartMeterPhase, SmartMeterTarifIndex, ElectricalDataFeature,  PACKAGE_NAME, DOMAIN as SUNOLOGY_DOMAIN
+from .const import SmartMeterPhase, SmartMeterTarifIndex, ElectricalDataFeature, PACKAGE_NAME, DOMAIN as SUNOLOGY_DOMAIN
+from .cloud_overview import SunologyOverviewCoordinator
 from .device import (
     PLAYMax,
     Gateway,
@@ -129,6 +131,13 @@ async def async_setup_entry(hass, config_entry, async_add_entities): # pylint: d
                 entities.extend(new_entities)
             async_add_entities(entities)
     _check_device()
+
+    overview_coordinator = sunology_context.overview_coordinator
+    if overview_coordinator is not None:
+        overview_entities = _build_overview_entities(overview_coordinator)
+        if overview_entities:
+            async_add_entities(overview_entities)
+
     return True
 
 class SunologPvPowerSensorEntity(SensorEntity):
@@ -1902,6 +1911,356 @@ class SunologyCurrentTarifSensorEntity(SensorEntity):
     def name(self):
         """ Entity name """
         return f"{self._name} energy current tarif"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Cloud Overview sensors  (coordinator: SunologyOverviewCoordinator)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _overview_slug(name: str) -> str:
+    """Return a safe entity-ID slug from any string."""
+    slug = re.sub(r"[^a-z0-9]", "_", name.lower())
+    return re.sub(r"_+", "_", slug).strip("_")
+
+
+def _overview_device_info(identifier_key: str, display_name: str, model: str = "Cloud Overview") -> DeviceInfo:
+    return DeviceInfo(
+        identifiers={(SUNOLOGY_DOMAIN, identifier_key)},
+        name=display_name,
+        manufacturer="Sunology",
+        model=model,
+    )
+
+
+def _build_overview_entities(coordinator: SunologyOverviewCoordinator) -> list:
+    """Build all overview-based sensor entities from the coordinator's current snapshot."""
+    entities: list[SensorEntity] = []
+    data = coordinator.data or {}
+
+    # Global production + grid + self-consumption (always registered)
+    entities.append(SunologyOverviewTotalProductionSensor(coordinator))
+    entities.append(SunologyOverviewGridPurchasedSensor(coordinator))
+    entities.append(SunologyOverviewGridSoldSensor(coordinator))
+    entities.append(SunologyOverviewSelfConsumptionSensor(coordinator))
+
+    # Per-panel sensors (dynamic — depends on API data at startup)
+    panels = data.get("production", {}).get("panels", {})
+    for panel_id, panel_data in panels.items():
+        surname = panel_data.get("surname") or panel_id
+        entities.append(SunologyOverviewPanelProductionSensor(coordinator, panel_id, surname))
+        entities.append(SunologyOverviewPanelStateSensor(coordinator, panel_id, surname))
+
+    # Per-battery sensors (optional — storageData may be absent)
+    batteries = data.get("storageData", {}).get("storageBatteries", {})
+    for serial, _battery_data in batteries.items():
+        entities.append(SunologyOverviewBatterySocSensor(coordinator, serial))
+        entities.append(SunologyOverviewBatteryPowerSensor(coordinator, serial))
+        entities.append(SunologyOverviewBatteryStateSensor(coordinator, serial))
+        entities.append(SunologyOverviewBatteryStoredEnergySensor(coordinator, serial))
+        entities.append(SunologyOverviewBatteryCapacitySensor(coordinator, serial))
+        entities.append(SunologyOverviewBatteryWorkingModeSensor(coordinator, serial))
+
+    return entities
+
+
+# ── Global production ────────────────────────────────────────────────────────
+
+class SunologyOverviewTotalProductionSensor(CoordinatorEntity, SensorEntity):
+    """Total PV production reported by the cloud overview API."""
+
+    _attr_device_class = SensorDeviceClass.POWER
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = "W"
+    _attr_icon = "mdi:solar-power"
+
+    def __init__(self, coordinator: SunologyOverviewCoordinator) -> None:
+        super().__init__(coordinator)
+        self._attr_unique_id = "overview_production_total"
+        self.entity_id = ENTITY_ID_FORMAT.format("sunology_production_total")
+        self._attr_name = "Sunology Production Total"
+        self._attr_device_info = _overview_device_info("overview_global", "Sunology Cloud Overview")
+
+    @property
+    def native_value(self):
+        if self.coordinator.data is None:
+            return None
+        return self.coordinator.data.get("production", {}).get("total")
+
+
+# ── Per-panel sensors ────────────────────────────────────────────────────────
+
+class SunologyOverviewPanelProductionSensor(CoordinatorEntity, SensorEntity):
+    """Instantaneous production for one panel."""
+
+    _attr_device_class = SensorDeviceClass.POWER
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = "W"
+    _attr_icon = "mdi:solar-panel"
+
+    def __init__(self, coordinator: SunologyOverviewCoordinator, panel_id: str, surname: str) -> None:
+        super().__init__(coordinator)
+        self._panel_id = panel_id
+        slug = _overview_slug(surname)
+        self._attr_unique_id = f"overview_panel_{panel_id}_production"
+        self.entity_id = ENTITY_ID_FORMAT.format(f"sunology_panel_{slug}_production")
+        self._attr_name = f"{surname} Production"
+        self._attr_device_info = _overview_device_info(
+            f"overview_panel_{panel_id}", f"Sunology Panel {surname}", "PLAY"
+        )
+
+    @property
+    def available(self) -> bool:
+        if not super().available:
+            return False
+        return self._panel_id in (self.coordinator.data or {}).get("production", {}).get("panels", {})
+
+    @property
+    def native_value(self):
+        panels = (self.coordinator.data or {}).get("production", {}).get("panels", {})
+        panel = panels.get(self._panel_id)
+        return panel.get("production") if panel else None
+
+
+class SunologyOverviewPanelStateSensor(CoordinatorEntity, SensorEntity):
+    """Connection state for one panel (CONNECTED / DISCONNECTED)."""
+
+    _attr_device_class = SensorDeviceClass.ENUM
+    _attr_options = ["CONNECTED", "DISCONNECTED"]
+    _attr_icon = "mdi:solar-panel"
+
+    def __init__(self, coordinator: SunologyOverviewCoordinator, panel_id: str, surname: str) -> None:
+        super().__init__(coordinator)
+        self._panel_id = panel_id
+        slug = _overview_slug(surname)
+        self._attr_unique_id = f"overview_panel_{panel_id}_state"
+        self.entity_id = ENTITY_ID_FORMAT.format(f"sunology_panel_{slug}_state")
+        self._attr_name = f"{surname} State"
+        self._attr_device_info = _overview_device_info(
+            f"overview_panel_{panel_id}", f"Sunology Panel {surname}", "PLAY"
+        )
+
+    @property
+    def available(self) -> bool:
+        if not super().available:
+            return False
+        return self._panel_id in (self.coordinator.data or {}).get("production", {}).get("panels", {})
+
+    @property
+    def native_value(self):
+        panels = (self.coordinator.data or {}).get("production", {}).get("panels", {})
+        panel = panels.get(self._panel_id)
+        return panel.get("deviceState") if panel else None
+
+
+# ── Grid / consumption sensors ───────────────────────────────────────────────
+
+class SunologyOverviewGridPurchasedSensor(CoordinatorEntity, SensorEntity):
+    """Power purchased from the grid (W)."""
+
+    _attr_device_class = SensorDeviceClass.POWER
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = "W"
+    _attr_icon = "mdi:transmission-tower-import"
+
+    def __init__(self, coordinator: SunologyOverviewCoordinator) -> None:
+        super().__init__(coordinator)
+        self._attr_unique_id = "overview_grid_purchased"
+        self.entity_id = ENTITY_ID_FORMAT.format("sunology_grid_purchased")
+        self._attr_name = "Sunology Grid Purchased"
+        self._attr_device_info = _overview_device_info("overview_global", "Sunology Cloud Overview")
+
+    @property
+    def native_value(self):
+        return (self.coordinator.data or {}).get("consumptionData", {}).get("purchased")
+
+
+class SunologyOverviewGridSoldSensor(CoordinatorEntity, SensorEntity):
+    """Power sold back to the grid (W)."""
+
+    _attr_device_class = SensorDeviceClass.POWER
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = "W"
+    _attr_icon = "mdi:transmission-tower-export"
+
+    def __init__(self, coordinator: SunologyOverviewCoordinator) -> None:
+        super().__init__(coordinator)
+        self._attr_unique_id = "overview_grid_sold"
+        self.entity_id = ENTITY_ID_FORMAT.format("sunology_grid_sold")
+        self._attr_name = "Sunology Grid Sold"
+        self._attr_device_info = _overview_device_info("overview_global", "Sunology Cloud Overview")
+
+    @property
+    def native_value(self):
+        return (self.coordinator.data or {}).get("consumptionData", {}).get("sold")
+
+
+class SunologyOverviewSelfConsumptionSensor(CoordinatorEntity, SensorEntity):
+    """Self-consumption ratio: (production - sold) / production × 100 (%)."""
+
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = "%"
+    _attr_icon = "mdi:home-lightning-bolt"
+
+    def __init__(self, coordinator: SunologyOverviewCoordinator) -> None:
+        super().__init__(coordinator)
+        self._attr_unique_id = "overview_self_consumption_ratio"
+        self.entity_id = ENTITY_ID_FORMAT.format("sunology_self_consumption_ratio")
+        self._attr_name = "Sunology Self Consumption"
+        self._attr_device_info = _overview_device_info("overview_global", "Sunology Cloud Overview")
+
+    @property
+    def native_value(self):
+        data = self.coordinator.data or {}
+        total = data.get("production", {}).get("total") or 0
+        sold = data.get("consumptionData", {}).get("sold") or 0
+        if total > 0:
+            return round((total - sold) / total * 100, 1)
+        return None
+
+
+# ── Per-battery sensors ──────────────────────────────────────────────────────
+
+class _SunologyOverviewBatteryBase(CoordinatorEntity, SensorEntity):
+    """Shared helpers for per-battery overview entities."""
+
+    def __init__(self, coordinator: SunologyOverviewCoordinator, serial: str) -> None:
+        super().__init__(coordinator)
+        self._serial = serial
+        battery_name = self._get_battery_name(coordinator, serial)
+        self._attr_device_info = _overview_device_info(
+            f"overview_battery_{serial.lower()}", f"Sunology Battery {battery_name}", "STOREY"
+        )
+
+    @staticmethod
+    def _get_battery_name(coordinator: SunologyOverviewCoordinator, serial: str) -> str:
+        batteries = (coordinator.data or {}).get("storageData", {}).get("storageBatteries", {})
+        bat = batteries.get(serial, {})
+        return bat.get("surname") or serial
+
+    @property
+    def available(self) -> bool:
+        if not super().available:
+            return False
+        return self._serial in (self.coordinator.data or {}).get("storageData", {}).get("storageBatteries", {})
+
+    def _battery_data(self) -> dict:
+        return (self.coordinator.data or {}).get("storageData", {}).get("storageBatteries", {}).get(self._serial, {})
+
+
+class SunologyOverviewBatterySocSensor(_SunologyOverviewBatteryBase):
+    """Battery state of charge (%)."""
+
+    _attr_device_class = SensorDeviceClass.BATTERY
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = "%"
+
+    def __init__(self, coordinator: SunologyOverviewCoordinator, serial: str) -> None:
+        super().__init__(coordinator, serial)
+        self._attr_unique_id = f"overview_battery_{serial.lower()}_soc"
+        self.entity_id = ENTITY_ID_FORMAT.format(f"sunology_battery_{_overview_slug(serial)}_soc")
+        self._attr_name = f"Sunology Battery {serial} SOC"
+
+    @property
+    def native_value(self):
+        return self._battery_data().get("soc")
+
+
+class SunologyOverviewBatteryPowerSensor(_SunologyOverviewBatteryBase):
+    """Battery power (W) — positive = charging, negative = discharging."""
+
+    _attr_device_class = SensorDeviceClass.POWER
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = "W"
+    _attr_icon = "mdi:battery-charging"
+
+    def __init__(self, coordinator: SunologyOverviewCoordinator, serial: str) -> None:
+        super().__init__(coordinator, serial)
+        self._attr_unique_id = f"overview_battery_{serial.lower()}_power"
+        self.entity_id = ENTITY_ID_FORMAT.format(f"sunology_battery_{_overview_slug(serial)}_power")
+        self._attr_name = f"Sunology Battery {serial} Power"
+
+    @property
+    def native_value(self):
+        bat = self._battery_data()
+        power = bat.get("power")
+        if power is None:
+            return None
+        state = bat.get("deviceState", "")
+        return -power if state == "DISCHARGING" else power
+
+
+class SunologyOverviewBatteryStateSensor(_SunologyOverviewBatteryBase):
+    """Battery device state (CHARGING / DISCHARGING / IDLE)."""
+
+    _attr_device_class = SensorDeviceClass.ENUM
+    _attr_options = ["CHARGING", "DISCHARGING", "IDLE", "CONNECTED", "DISCONNECTED"]
+    _attr_icon = "mdi:battery-sync"
+
+    def __init__(self, coordinator: SunologyOverviewCoordinator, serial: str) -> None:
+        super().__init__(coordinator, serial)
+        self._attr_unique_id = f"overview_battery_{serial.lower()}_state"
+        self.entity_id = ENTITY_ID_FORMAT.format(f"sunology_battery_{_overview_slug(serial)}_state")
+        self._attr_name = f"Sunology Battery {serial} State"
+
+    @property
+    def native_value(self):
+        return self._battery_data().get("deviceState")
+
+
+class SunologyOverviewBatteryStoredEnergySensor(_SunologyOverviewBatteryBase):
+    """Energy currently stored in the battery (kWh)."""
+
+    _attr_device_class = SensorDeviceClass.ENERGY
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = "kWh"
+    _attr_icon = "mdi:battery"
+
+    def __init__(self, coordinator: SunologyOverviewCoordinator, serial: str) -> None:
+        super().__init__(coordinator, serial)
+        self._attr_unique_id = f"overview_battery_{serial.lower()}_stored_energy"
+        self.entity_id = ENTITY_ID_FORMAT.format(f"sunology_battery_{_overview_slug(serial)}_stored_energy")
+        self._attr_name = f"Sunology Battery {serial} Stored Energy"
+
+    @property
+    def native_value(self):
+        return self._battery_data().get("storedEnergyKwh")
+
+
+class SunologyOverviewBatteryCapacitySensor(_SunologyOverviewBatteryBase):
+    """Nominal battery capacity (Wh)."""
+
+    _attr_native_unit_of_measurement = "Wh"
+    _attr_icon = "mdi:battery-high"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(self, coordinator: SunologyOverviewCoordinator, serial: str) -> None:
+        super().__init__(coordinator, serial)
+        self._attr_unique_id = f"overview_battery_{serial.lower()}_capacity"
+        self.entity_id = ENTITY_ID_FORMAT.format(f"sunology_battery_{_overview_slug(serial)}_capacity")
+        self._attr_name = f"Sunology Battery {serial} Capacity"
+
+    @property
+    def native_value(self):
+        return self._battery_data().get("capacity")
+
+
+class SunologyOverviewBatteryWorkingModeSensor(_SunologyOverviewBatteryBase):
+    """Battery working mode (HUB_REMOTE / etc.)."""
+
+    _attr_device_class = SensorDeviceClass.ENUM
+    _attr_options = ["HUB_REMOTE", "COST_OPTIM", "POWER_OPTIM"]
+    _attr_icon = "mdi:cog"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(self, coordinator: SunologyOverviewCoordinator, serial: str) -> None:
+        super().__init__(coordinator, serial)
+        self._attr_unique_id = f"overview_battery_{serial.lower()}_working_mode"
+        self.entity_id = ENTITY_ID_FORMAT.format(f"sunology_battery_{_overview_slug(serial)}_working_mode")
+        self._attr_name = f"Sunology Battery {serial} Working Mode"
+
+    @property
+    def native_value(self):
+        return self._battery_data().get("workingMode")
 
     @property
     def icon(self):
